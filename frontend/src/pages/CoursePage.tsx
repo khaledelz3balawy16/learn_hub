@@ -1,0 +1,520 @@
+import { ArrowLeft, Award, BarChart3, Check, ChevronDown, Clock, Coins, Crown, FileText, Globe, HelpCircle, Infinity as InfinityIcon, ListChecks, PlayCircle, Radio, RefreshCw, ShoppingCart, Smartphone, Users, type LucideIcon } from 'lucide-react'
+import { useState } from 'react'
+import { useLocation, useParams } from 'react-router-dom'
+import { toast } from '@/lib/toast'
+
+import { Backdrop } from '@/components/art/backdrops'
+import { DashboardBackdrop } from '@/components/art/dashboard-backdrop'
+import { Avatar } from '@/components/ui/avatar'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { CourseThumb } from '@/components/ui/course-thumb'
+import { ErrorState, Rating } from '@/components/ui/misc'
+import { Progress } from '@/components/ui/progress'
+import { Skeleton } from '@/components/ui/skeleton'
+import { useCategories, useCourse, usePreview, useRelatedCourses, useReviews } from '@/features/catalog/api'
+import { CourseCard, CourseCardSkeleton } from '@/features/catalog/CourseCard'
+import { useAddToCart, useCheckout, useCourseInstalmentOffer, usePlanEnroll, useStartCourseInstalments } from '@/features/commerce/api'
+import { WishlistHeart } from '@/features/commerce/WishlistHeart'
+import { useAccess } from '@/features/b2c/api'
+import { UnlockButton } from '@/features/b2c/UnlockButton'
+import { Price } from '@/features/catalog/CourseCard'
+import { TeamBuy } from '@/features/corporate/TeamBuy'
+import { ReportButton } from '@/features/engagement/ReportButton'
+import { useMe } from '@/features/identity/auth'
+import { cn } from '@/lib/cn'
+import { useCurrency } from '@/lib/currency'
+import { count, duration, money, relativeDate, shortDate } from '@/lib/format'
+import { Link, useNavigate } from '@/lib/router'
+import { authAlert } from '@/lib/auth-alert'
+
+const kindIcon: Record<string, LucideIcon> = { video: PlayCircle, article: FileText, quiz: HelpCircle, assignment: ListChecks, live_session: Radio, external_link: Globe }
+
+const ACCESS_SOURCE_LABEL: Record<string, string> = {
+  legacy: 'You already own this',
+  package: 'Included in a package you bought',
+  token: 'CHANGE_ME',
+  subscription: 'Included in your subscription',
+  admin: 'Granted by LearnHub',
+}
+
+type Detail = NonNullable<ReturnType<typeof useCourse>['data']>
+
+function Curriculum({ sections, onPreview }: { sections: Detail['sections']; onPreview: (l: { key: string; title: string }) => void }) {
+  const [open, setOpen] = useState<Set<string>>(() => new Set(sections.slice(0, 1).map((s) => s.id)))
+  const lectures = sections.reduce((n, s) => n + s.lectures.length, 0)
+  const total = sections.reduce((n, s) => n + s.lectures.reduce((m, l) => m + l.duration_sec, 0), 0)
+  const allOpen = open.size === sections.length
+  return (
+    <section aria-labelledby="curriculum" className="scroll-mt-24">
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h2 id="curriculum" className="text-xl font-semibold tracking-tight">Course content</h2>
+          <p className="mt-1 text-sm text-muted">
+            {sections.length} sections · {lectures} lectures · {duration(total)} total
+          </p>
+        </div>
+        <Button variant="link" onClick={() => setOpen(allOpen ? new Set() : new Set(sections.map((s) => s.id)))}>
+          {allOpen ? 'Collapse all' : 'Expand all'}
+        </Button>
+      </div>
+      <div className="mt-4 overflow-hidden rounded-lg border border-border bg-surface">
+        {sections.map((s, i) => {
+          const isOpen = open.has(s.id)
+          const secs = s.lectures.reduce((m, l) => m + l.duration_sec, 0)
+          return (
+            <div key={s.id} className={cn(i > 0 && 'border-t border-border')}>
+              <button
+                type="button"
+                aria-expanded={isOpen}
+                onClick={() => setOpen((prev) => {
+                  const next = new Set(prev)
+                  if (next.has(s.id)) next.delete(s.id)
+                  else next.add(s.id)
+                  return next
+                })}
+                className="flex w-full items-center gap-3 bg-surface-2/50 px-4 py-3.5 text-left transition-colors hover:bg-surface-2"
+              >
+                <ChevronDown className={cn('size-4 shrink-0 text-muted transition-transform', isOpen && 'rotate-180')} />
+                <span className="flex-1 text-[15px] font-medium">{s.title}</span>
+                <span className="text-xs whitespace-nowrap text-muted">
+                  {s.lectures.length} {s.lectures.length === 1 ? 'lecture' : 'lectures'}
+                  {secs ? ` · ${duration(secs)}` : ''}
+                </span>
+              </button>
+              {isOpen ? (
+                <ul className="divide-y divide-border">
+                  {s.lectures.map((l) => {
+                    const Icon = kindIcon[l.kind] ?? FileText
+                    return (
+                      <li key={l.key} className="flex items-center gap-3 px-4 py-3 pl-11 text-sm">
+                        <Icon className="size-4 shrink-0 text-subtle" />
+                        {l.is_preview && l.kind === 'video' ? (
+                          <button type="button" onClick={() => onPreview({ key: l.key, title: l.title })} className="flex-1 text-left font-medium text-primary hover:underline">
+                            {l.title}
+                          </button>
+                        ) : (
+                          <span className="flex-1">{l.title}</span>
+                        )}
+                        {l.is_preview ? <Badge tone="primary">Preview</Badge> : null}
+                        {!l.is_preview && l.token_price ? (
+                          <Badge tone="neutral" title="Unlock this lecture with tokens">
+                            <Coins /> {count(l.token_price)}
+                          </Badge>
+                        ) : null}
+                        {l.duration_sec ? <span className="w-12 text-right text-xs text-muted tabular">{duration(l.duration_sec)}</span> : <span className="w-12" />}
+                      </li>
+                    )
+                  })}
+                </ul>
+              ) : null}
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function ReviewList({ courseId }: { courseId: string }) {
+  const { data, hasNextPage, fetchNextPage, isFetchingNextPage, isLoading } = useReviews(courseId)
+  const items = data?.pages.flatMap((p) => p.items) ?? []
+  if (isLoading) return <Skeleton className="mt-4 h-32 rounded-lg" />
+  if (!items.length) return null
+  return (
+    <>
+      <ul className="stagger mt-4 grid gap-3 sm:grid-cols-2">
+        {items.map((r) => (
+          <li key={r.id} className="rounded-lg border border-border bg-surface p-4">
+            <div className="flex items-center gap-3">
+              <Avatar name={r.author.name || 'Learner'} size="sm" />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{r.author.name || 'LearnHub learner'}</p>
+                <p className="text-xs text-muted">{relativeDate(r.created_at)}</p>
+              </div>
+              <span className="ml-auto">
+                <Rating value={r.rating} />
+              </span>
+            </div>
+            {r.body ? <p className="mt-3 text-sm leading-relaxed text-muted">{r.body}</p> : null}
+            {r.instructor_reply ? (
+              <div className="mt-3 rounded-md border-l-2 border-primary bg-primary-soft/50 px-3 py-2 text-sm">
+                <p className="text-xs font-medium text-primary-soft-text">Instructor reply</p>
+                <p className="mt-1 text-muted">{r.instructor_reply}</p>
+              </div>
+            ) : null}
+            <div className="mt-2 flex justify-end">
+              <ReportButton kind="review" id={r.id} authorId={r.author.id} />
+            </div>
+          </li>
+        ))}
+      </ul>
+      {hasNextPage ? (
+        <Button variant="secondary" className="mt-4" loading={isFetchingNextPage} onClick={() => void fetchNextPage()}>
+          Show more reviews
+        </Button>
+      ) : null}
+    </>
+  )
+}
+
+function Reviews({ course }: { course: Detail }) {
+  const total = Object.values(course.rating_breakdown).reduce((a, b) => a + b, 0)
+  return (
+    <section aria-labelledby="reviews" className="scroll-mt-24">
+      <h2 id="reviews" className="text-xl font-semibold tracking-tight">Learner feedback</h2>
+      {!course.rating_count ? (
+        <p className="mt-3 rounded-lg border border-dashed border-border bg-surface p-5 text-sm text-muted">No ratings yet. Learners can rate the course once they have started it.</p>
+      ) : (
+        <>
+          <div className="mt-4 flex flex-wrap items-center gap-8 rounded-lg border border-border bg-surface p-5">
+            <div className="text-center">
+              <p className="text-5xl font-bold tracking-tight text-warning tabular">{course.rating_avg.toFixed(1)}</p>
+              <div className="mt-2">
+                <Rating value={course.rating_avg} />
+              </div>
+              <p className="mt-1 text-xs text-muted">{course.rating_count} {course.rating_count === 1 ? 'rating' : 'ratings'}</p>
+            </div>
+            <div className="grid min-w-56 flex-1 gap-2">
+              {[5, 4, 3, 2, 1].map((star) => {
+                const n = course.rating_breakdown[String(star)] ?? 0
+                const p = total ? (n / total) * 100 : 0
+                return (
+                  <div key={star} className="flex items-center gap-3 text-xs">
+                    <span className="w-10 text-muted">{star} star</span>
+                    <Progress value={p} tone="warning" className="h-2" label={`${star} star ratings`} />
+                    <span className="w-9 text-right text-muted tabular">{Math.round(p)}%</span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+          <ReviewList courseId={course.id} />
+        </>
+      )}
+    </section>
+  )
+}
+
+/** Free sample lectures play without enrolling (signed Bunny link from the server). */
+function PreviewDialog({ slug, lecture, onClose }: { slug: string; lecture: { key: string; title: string } | null; onClose: () => void }) {
+  const { data, isLoading, error } = usePreview(slug, lecture?.key ?? null)
+  return (
+    <Dialog open={!!lecture} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent title={lecture ? `Preview: ${lecture.title}` : 'Preview'} className="max-w-[860px]">
+        <div className="relative aspect-video overflow-hidden rounded-lg bg-nav">
+          {isLoading ? (
+            <Skeleton className="size-full rounded-none" />
+          ) : error ? (
+            <div className="flex size-full items-center justify-center p-6 text-center text-sm text-white/80">This preview isn't available right now.</div>
+          ) : data?.kind === 'bunny' && data.url ? (
+            <iframe src={data.url} title={lecture?.title ?? 'Preview'} className="size-full" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen />
+          ) : (
+            <div className="relative flex size-full flex-col items-center justify-center gap-3 p-6 text-center text-white">
+              <Backdrop variant="aurora" onDark height="100%" fade={false} />
+              <PlayCircle className="relative size-12 text-white/90" strokeWidth={1.5} />
+              <p className="relative max-w-sm text-sm text-white/80">This demo course has no recorded video yet. Real courses play here, straight from the video library.</p>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function BuyBox({ course }: { course: Detail }) {
+  const { data: me } = useMe()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const { code } = useCurrency()
+  const v = course.viewer
+  const needLogin = () => navigate(`/login?next=${encodeURIComponent(location.pathname)}`)
+  const addToCart = useAddToCart()
+  const checkout = useCheckout()
+  const planEnroll = usePlanEnroll()
+  const instalmentOffer = useCourseInstalmentOffer(course.id, !!me)
+  const startInstalments = useStartCourseInstalments()
+  const free = !!course.price?.free
+  // Resolver is the authority: if the person already has access (token unlock, package,
+  // subscription, legacy purchase) we must not show a purchase prompt. Only ask the server
+  // when they aren't already known to own it through an enrolment or by teaching it.
+  const b2cEligible = !!me && !v.enrollment_id && !v.is_instructor && !v.plan_access
+  const access = useAccess('course', course.id, b2cEligible)
+  const alreadyHasAccess = b2cEligible && access.data?.allowed === true
+  const tokenCoursePrice = course.full_course_token_price ?? null
+
+  const fail = (e: unknown) => toast.error((e as Error).message)
+  const add = () => addToCart.mutate(course.id, { onSuccess: () => authAlert({ kind: 'cart', title: 'Added to your cart', text: course.title, autoClose: 3500, action: { label: 'View cart', onClick: () => navigate('/cart') } }), onError: fail })
+  // "Buy now" and free courses skip the cart: one course straight to checkout
+  const buyNow = () =>
+    checkout.mutate(
+      { courseIds: [course.id], currency: course.price?.currency ?? code ?? 'GBP' },
+      {
+        // free courses need no payment: straight into the player
+        onSuccess: (r) =>
+          r.checkout_url
+            ? window.location.assign(r.checkout_url)
+            : r.status === 'paid' && !r.total_minor
+              ? (toast.success("You're enrolled. Enjoy the course!"), navigate(`/learn/${course.slug}`))
+              : navigate(`/checkout/success?order=${r.order_id}`),
+        onError: fail,
+      },
+    )
+  const beginInstalments = () => {
+    if (!me) return needLogin()
+    startInstalments.mutate(course.id, {
+      onSuccess: () => navigate('/account/instalments'),
+      onError: fail,
+    })
+  }
+
+  return (
+    <Card className="overflow-hidden rounded-2xl shadow-sm">
+      <div className="p-5 sm:p-6">
+        {v.enrollment_id ? (
+          <>
+            <p className="text-sm font-medium">You're enrolled</p>
+            <Progress value={v.progress_pct ?? 0} className="mt-3" label="Course progress" />
+            <p className="mt-2 text-xs text-muted">{Math.round(v.progress_pct ?? 0)}% complete</p>
+            <Button size="lg" className="mt-4 w-full" asChild>
+              <Link to={`/learn/${course.slug}`}>
+                <PlayCircle /> {(v.progress_pct ?? 0) > 0 ? 'Continue learning' : 'Start learning'}
+              </Link>
+            </Button>
+          </>
+        ) : v.is_instructor ? (
+          <p className="rounded-md bg-primary-soft px-3 py-2.5 text-sm text-primary-soft-text">You teach this course.</p>
+        ) : v.plan_access ? (
+          <>
+            <Badge tone="primary">Included in your Personal Plan</Badge>
+            <Button size="lg" className="mt-4 w-full" loading={planEnroll.isPending} onClick={() => planEnroll.mutate(course.id, { onSuccess: () => navigate(`/learn/${course.slug}`), onError: fail })}>
+              <PlayCircle /> Start learning
+            </Button>
+          </>
+        ) : alreadyHasAccess ? (
+          <>
+            <Badge tone="success">
+              <Check /> {ACCESS_SOURCE_LABEL[access.data!.source] ?? 'You have access'}
+            </Badge>
+            <Button size="lg" className="mt-4 w-full" asChild>
+              <Link to={`/learn/${course.slug}`}>
+                <PlayCircle /> Start learning
+              </Link>
+            </Button>
+          </>
+        ) : free ? (
+          <>
+            <p className="text-3xl font-bold tracking-tight">Free</p>
+            <Button size="lg" className="mt-4 w-full" loading={checkout.isPending} onClick={() => (me ? buyNow() : needLogin())}>
+              <PlayCircle /> Enrol for free
+            </Button>
+          </>
+        ) : course.price ? (
+          <>
+            <Price price={course.price} className="text-3xl [&>span:first-child]:text-3xl [&>span:first-child]:font-bold" />
+            <div className="mt-4">
+              <Button size="lg" className="w-full" loading={addToCart.isPending} onClick={() => (me ? (v.in_cart ? navigate('/cart') : add()) : needLogin())}>
+                <ShoppingCart /> {v.in_cart ? 'Go to cart' : 'Add to cart'}
+              </Button>
+            </div>
+            <Button size="lg" variant="soft" className="mt-2 w-full" onClick={() => (me ? navigate(`/checkout/pay/${course.slug}`) : needLogin())}>
+              Buy now
+            </Button>
+            <p className="mt-3 text-center text-xs text-muted">30-day refund policy · secure checkout by Stripe</p>
+            {tokenCoursePrice ? (
+              <div className="mt-4 border-t border-border pt-4">
+                <p className="mb-2 text-xs font-medium text-muted">Or unlock the whole course with tokens</p>
+                <UnlockButton scope="course" targetId={course.id} tokenPrice={tokenCoursePrice} title={course.title} size="lg" className="w-full" onUnlocked={() => navigate(`/learn/${course.slug}`)} />
+              </div>
+            ) : null}
+            {course.in_subscription ? (
+              <p className="mt-3 flex items-center justify-center gap-1.5 text-xs text-muted">
+                <Crown className="size-3.5 text-primary" />
+                Also included in the{' '}
+                <Link to="/subscription" className="font-medium text-primary hover:underline">
+                  Unlimited plan
+                </Link>
+              </p>
+            ) : null}
+          </>
+        ) : tokenCoursePrice ? (
+          <>
+            <p className="text-sm text-muted">Unlock this course with tokens.</p>
+            <div className="mt-3">
+              <UnlockButton scope="course" targetId={course.id} tokenPrice={tokenCoursePrice} title={course.title} size="lg" className="w-full" onUnlocked={() => navigate(`/learn/${course.slug}`)} />
+            </div>
+          </>
+        ) : (
+          <p className="text-sm text-muted">This course is not sold on its own.</p>
+        )}
+        {instalmentOffer.data?.enabled && (!alreadyHasAccess || instalmentOffer.data.existing_learner_allowed) && (!v.enrollment_id || instalmentOffer.data.existing_learner_allowed) ? (
+          <div className="mt-4 rounded-lg border border-border bg-surface-2/60 p-4">
+            <p className="font-semibold">Pay in fixed monthly instalments</p>
+            <p className="mt-1 text-sm text-muted">{instalmentOffer.data.instalment_count} payments totalling {money(instalmentOffer.data.total_minor, instalmentOffer.data.currency, instalmentOffer.data.exponent)}. This is a fixed course purchase, not a subscription.</p>
+            <ol className="mt-3 grid gap-1 text-xs text-muted">
+              {instalmentOffer.data.payments.map((payment) => (
+                <li key={payment.number} className="flex justify-between gap-3"><span>Payment {payment.number} · {shortDate(payment.due_at)}</span><span className="tabular">{money(payment.amount_minor, instalmentOffer.data.currency, instalmentOffer.data.exponent)}</span></li>
+              ))}
+            </ol>
+            <Button size="lg" variant="secondary" className="mt-3 w-full" loading={startInstalments.isPending} onClick={beginInstalments}>
+              Start fixed instalment plan
+            </Button>
+            <p className="mt-2 text-xs text-muted">Payments are not collected here yet. Paid stages become available after payment is confirmed.</p>
+          </div>
+        ) : null}
+        <ul className="mt-5 grid gap-3 border-t border-border pt-5 text-sm">
+          {[
+            [PlayCircle, `${duration(course.total_duration_sec)} of content`],
+            [BarChart3, `${course.lecture_count} lectures`],
+            [Smartphone, 'Learn on phone and desktop'],
+            [InfinityIcon, 'Lifetime access'],
+            ...(course.cpd_hours ? [[Award, `Certificate · ${course.cpd_hours} CPD hours`]] : [[Award, 'Certificate of completion']]),
+          ].map(([Icon, text]) => {
+            const I = Icon as LucideIcon
+            return (
+              <li key={text as string} className="flex items-center gap-2.5 text-muted">
+                <I className="size-4 text-text" /> {text as string}
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+    </Card>
+  )
+}
+
+function CourseSkeleton() {
+  return (
+    <div className="relative isolate">
+      <DashboardBackdrop className="fixed inset-0 -z-10" />
+      <div className="relative mx-auto max-w-7xl px-4 py-10 sm:px-6">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="mt-4 h-10 w-2/3" />
+        <Skeleton className="mt-3 h-5 w-1/2" />
+        <Skeleton className="mt-10 h-72 w-full lg:w-2/3" />
+      </div>
+    </div>
+  )
+}
+
+export function CoursePage() {
+  const { slug = '' } = useParams()
+  const { data: c, isLoading, error, refetch } = useCourse(slug)
+  const related = useRelatedCourses(slug)
+  const { data: cats } = useCategories()
+  const [preview, setPreview] = useState<{ key: string; title: string } | null>(null)
+  const navigate = useNavigate()
+  // Return to the previous page (e.g. the courses list); fall back to the catalogue.
+  const goBack = () => (window.history.length > 1 ? window.history.back() : navigate('/courses'))
+  if (isLoading) return <CourseSkeleton />
+  if (error || !c) return <ErrorState message={(error as Error)?.message} onRetry={() => void refetch()} />
+  const firstPreview = c.sections.flatMap((s) => s.lectures).find((l) => l.is_preview && l.kind === 'video')
+  const catSlug = cats?.find((x) => x.name === c.category)?.slug
+
+  return (
+    <div className="relative isolate">
+      {/* The shared learner/workspace artwork, fixed behind the whole page (same as "My learning"). */}
+      <DashboardBackdrop className="animate-fade-in fixed inset-0 -z-10" />
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+        <div className="mb-5 flex flex-wrap items-center gap-3">
+          <Button variant="secondary" size="sm" onClick={goBack}><ArrowLeft /> Back</Button>
+          <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-[13px] text-muted">
+            <Link to="/courses" className="hover:text-primary">Courses</Link>
+            {c.category ? <><span aria-hidden>/</span><Link to={catSlug ? `/courses?category=${catSlug}` : '/courses'} className="font-medium text-primary">{c.category}</Link></> : null}
+          </nav>
+        </div>
+
+        <section className="overflow-hidden rounded-2xl border border-border bg-surface shadow-sm">
+          <div className="grid gap-5 p-4 sm:p-6 lg:grid-cols-[minmax(280px,0.9fr)_minmax(0,1.4fr)] lg:items-center lg:gap-8">
+            <div className="relative isolate aspect-video overflow-hidden rounded-xl bg-nav" style={{ viewTransitionName: 'course-cover' }}>
+              <CourseThumb src={c.thumbnail_url} title={c.title} category={c.category} className="absolute inset-0 size-full rounded-none" />
+              <WishlistHeart courseId={c.id} slug={c.slug} title={c.title} initialSaved={c.viewer.in_wishlist} className="absolute top-3 right-3 z-10" />
+              {firstPreview ? (
+                <button type="button" onClick={() => setPreview({ key: firstPreview.key, title: firstPreview.title })} className="group absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/10 text-white transition-colors hover:bg-black/25">
+                  <span className="flex size-14 items-center justify-center rounded-full bg-white text-primary shadow-lg transition-transform group-hover:scale-110"><PlayCircle className="size-7" /></span>
+                  <span className="text-sm font-semibold drop-shadow">Preview course</span>
+                </button>
+              ) : null}
+            </div>
+            <div className="min-w-0 py-1">
+              <div className="flex flex-wrap items-center gap-2">
+                {c.category ? <Badge tone="primary">{c.category}</Badge> : null}
+                {c.student_count > 50 ? <Badge tone="warning">Bestseller</Badge> : null}
+              </div>
+              <h1 className="mt-3 text-2xl leading-tight font-bold tracking-tight sm:text-3xl lg:text-4xl" style={{ viewTransitionName: 'course-title' }}>{c.title}</h1>
+              {c.subtitle ? <p className="mt-3 max-w-3xl text-base leading-relaxed text-muted sm:text-lg">{c.subtitle}</p> : null}
+              <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
+                <Rating value={c.rating_avg} count={c.rating_count} size="md" />
+                <span className="inline-flex items-center gap-1.5 text-muted"><Users className="size-4" /> {count(c.student_count)} learners</span>
+                <span className="inline-flex items-center gap-1.5 text-muted"><Clock className="size-4" /> {duration(c.total_duration_sec)}</span>
+              </div>
+              <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border pt-4 text-sm text-muted">
+                {c.instructor_profiles.length ? <span>By {c.instructor_profiles.map((i, n) => <span key={i.id} className="font-medium text-primary">{n ? ', ' : ''}{i.name}</span>)}</span> : null}
+                {c.updated_at ? <span className="inline-flex items-center gap-1.5"><RefreshCw className="size-3.5" /> Updated {shortDate(c.updated_at)}</span> : null}
+                <span className="inline-flex items-center gap-1.5"><Globe className="size-3.5" /> English</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <nav aria-label="Course sections" className="mt-5 overflow-x-auto border-b border-border scrollbar-none">
+          <div className="flex min-w-max gap-2">
+            {[
+              ['#overview', 'Overview'],
+              ['#curriculum', 'Course content'],
+              ['#reviews', 'Learner feedback'],
+            ].map(([href, label]) => <a key={href} href={href} className="border-b-2 border-transparent px-4 py-3 text-sm font-medium text-muted transition-colors hover:border-primary/40 hover:text-primary">{label}</a>)}
+          </div>
+        </nav>
+
+        <div className="mt-6 grid animate-reveal min-w-0 gap-6 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.4fr)_340px]">
+          <div id="overview" className="grid min-w-0 content-start gap-6 scroll-mt-24">
+            {c.topics.length ? (
+              <section className="rounded-2xl border border-primary/15 bg-primary-soft/20 p-5 sm:p-6">
+                <h2 className="text-lg font-semibold tracking-tight">What you’ll learn</h2>
+                <ul className="mt-4 grid gap-3">
+                  {c.topics.map((t) => <li key={t} className="flex items-start gap-2.5 text-sm leading-relaxed"><Check className="mt-0.5 size-4 shrink-0 text-success" /> <span>{t}</span></li>)}
+                </ul>
+              </section>
+            ) : null}
+            <section aria-labelledby="about" className="rounded-2xl border border-border bg-surface p-5 sm:p-6">
+              <h2 id="about" className="text-lg font-semibold tracking-tight">About this course</h2>
+              {/* description is sanitised on the server (nh3) before it is stored */}
+              <div className="mt-3 max-w-none text-sm leading-relaxed text-muted [&_a]:text-primary [&_li]:ml-5 [&_li]:list-disc [&_p]:mb-3" dangerouslySetInnerHTML={{ __html: c.description }} />
+            </section>
+            {c.instructor_profiles.length ? (
+              <section aria-labelledby="instructors" className="rounded-2xl border border-border bg-surface p-5 sm:p-6">
+                <h2 id="instructors" className="text-lg font-semibold tracking-tight">Instructor{c.instructor_profiles.length > 1 ? 's' : ''}</h2>
+                <div className="mt-4 grid gap-4">
+                  {c.instructor_profiles.map((i) => <div key={i.id} className="flex items-center gap-3"><Avatar name={i.name} src={i.avatar_url} size="md" /><div className="min-w-0"><p className="truncate text-sm font-semibold text-primary">{i.name}</p><p className="text-xs text-muted">{i.headline || 'LearnHub instructor'}</p></div></div>)}
+                </div>
+              </section>
+            ) : null}
+          </div>
+
+          <div className="grid min-w-0 content-start gap-6">
+            <Curriculum sections={c.sections} onPreview={setPreview} />
+            <Reviews course={c} />
+          </div>
+
+          <aside className="min-w-0 xl:sticky xl:top-24 xl:self-start">
+            <BuyBox course={c} />
+            <TeamBuy courseId={c.id} title={c.title} />
+          </aside>
+        </div>
+
+        {related.isLoading || (related.data?.length ?? 0) > 0 ? (
+          <section aria-labelledby="related-courses" className="mt-10 border-t border-border pt-8">
+            <div className="mb-4"><h2 id="related-courses" className="text-xl font-semibold tracking-tight">{c.category ? `More in ${c.category}` : 'Similar courses'}</h2><p className="mt-1 text-sm text-muted">Courses from the same category or covering related topics.</p></div>
+            <div className="grid grid-cols-1 gap-4 min-[480px]:grid-cols-2 xl:grid-cols-3">
+              {related.isLoading ? Array.from({ length: 3 }, (_, index) => <CourseCardSkeleton key={index} />) : related.data?.slice(0, 6).map((course) => <CourseCard key={course.id} course={course} />)}
+            </div>
+          </section>
+        ) : null}
+      </div>
+      <PreviewDialog slug={c.slug} lecture={preview} onClose={() => setPreview(null)} />
+    </div>
+  )
+}

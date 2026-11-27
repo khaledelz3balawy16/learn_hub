@@ -1,0 +1,548 @@
+import { ArrowLeft, ArrowRight, BriefcaseBusiness, Building2, Crown, HeartHandshake, Plus, Search, ShieldCheck, UserCog, UserMinus, UserPlus, Users } from 'lucide-react'
+import { type FormEvent, useState } from 'react'
+import { toast } from '@/lib/toast'
+
+import { Avatar } from '@/components/ui/avatar'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Field, Input, NativeSelect } from '@/components/ui/input'
+import { EmptyState, ErrorState, PageHeader, StatCard } from '@/components/ui/misc'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Table, Td, Th, Tr } from '@/components/ui/table'
+import {
+  COMPANY_STATUSES,
+  type ConsoleCompany,
+  type ConsoleCompanyDetail,
+  useAddAdmin,
+  useCompanies,
+  useCompany,
+  useCompanyFeatures,
+  useCompanyKpis,
+  useCreateCompany,
+  useEndGrant,
+  useGrantFeature,
+  useRemoveAdmin,
+  useUpdateCompany,
+} from '@/features/console/companies'
+import { ConfirmDialog, DetailSheet, InfoRow, StatusPill, useParam } from '@/features/console/ui'
+import { useWorkspace } from '@/features/identity/workspace'
+import { useDebounced } from '@/features/org/ui'
+import { count, shortDate } from '@/lib/format'
+import { useNavigate } from '@/lib/router'
+import type { StaffPreviewRole } from '@/lib/workspace'
+
+// Keep both presentations available so returning to the previous drawer is a
+// one-line change if the inline company profile is not the preferred direction.
+const COMPANY_DETAIL_PRESENTATION = 'inline' as 'inline' | 'sheet'
+
+function Kpis() {
+  const { data } = useCompanyKpis()
+  if (!data) return <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">{Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-[118px] rounded-lg" />)}</div>
+  return (
+    <div className="stagger grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <StatCard label="Companies" value={data.total} icon={<Building2 />} hint={`${data.active} active`} />
+      <StatCard label="On trial" value={data.trial} icon={<ShieldCheck />} tone="info" />
+      <StatCard label="Suspended" value={data.suspended} icon={<Building2 />} tone={data.suspended ? 'danger' : 'success'} />
+      <StatCard label="Seats in use" value={data.seats_used} icon={<Users />} tone="success" hint="people in company workspaces" />
+    </div>
+  )
+}
+
+const slugify = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80)
+
+function CreateCompany({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (o: boolean) => void; onCreated: (id: string) => void }) {
+  const create = useCreateCompany()
+  const [name, setName] = useState('')
+  const [slug, setSlug] = useState('')
+  const [owner, setOwner] = useState('')
+  const [seats, setSeats] = useState('')
+  const [status, setStatus] = useState('active')
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    create.mutate(
+      { name: name.trim(), slug: slug || slugify(name), owner_email: owner.trim(), seat_limit: seats ? Number(seats) : null, status },
+      {
+        onSuccess: (r) => (toast.success('Company created'), onOpenChange(false), setName(''), setSlug(''), setOwner(''), setSeats(''), onCreated(r.id)),
+        onError: (er) => toast.error(er.message),
+      },
+    )
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent title="Add a company" description="The owner must already have an account. They are told by notification.">
+        <form className="grid gap-4" onSubmit={submit}>
+          <Field label="Company name">{(f) => <Input {...f} value={name} onChange={(e) => setName(e.target.value)} required minLength={2} maxLength={200} />}</Field>
+          <Field label="Web address name" hint="Lower-case letters, numbers and dashes.">
+            {(f) => <Input {...f} value={slug || slugify(name)} onChange={(e) => setSlug(slugify(e.target.value))} required pattern="[a-z0-9-]+" />}
+          </Field>
+          <Field label="Owner's email">{(f) => <Input {...f} type="email" value={owner} onChange={(e) => setOwner(e.target.value)} required />}</Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Seat limit" hint="Leave empty for no limit.">{(f) => <Input {...f} type="number" min={1} value={seats} onChange={(e) => setSeats(e.target.value)} />}</Field>
+            <Field label="Status">
+              {(f) => (
+                <NativeSelect {...f} value={status} onChange={(e) => setStatus(e.target.value)}>
+                  <option value="active">Active</option>
+                  <option value="trial">Trial</option>
+                </NativeSelect>
+              )}
+            </Field>
+          </div>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="submit" loading={create.isPending}>Create company</Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function DetailsSection({ c }: { c: ConsoleCompanyDetail }) {
+  const update = useUpdateCompany(c.id)
+  const [name, setName] = useState(c.name)
+  const [seats, setSeats] = useState(c.seat_limit ? String(c.seat_limit) : '')
+  const [status, setStatus] = useState(c.status)
+  const [confirm, setConfirm] = useState(false)
+  const nameChanged = name.trim() !== c.name
+  const seatsChanged = (seats ? Number(seats) : null) !== c.seat_limit
+  const statusChanged = status !== c.status
+  const risky = statusChanged && (status === 'suspended' || status === 'cancelled')
+  const save = (reason = '') =>
+    update.mutate(
+      {
+        name: nameChanged ? name.trim() : undefined,
+        status: statusChanged ? status : undefined,
+        seat_limit: seatsChanged && seats ? Number(seats) : undefined,
+        clear_seat_limit: seatsChanged && !seats,
+        reason,
+      },
+      { onSuccess: () => (toast.success('Company updated'), setConfirm(false)), onError: (e) => toast.error(e.message) },
+    )
+  return (
+    <section className="grid gap-3">
+      <h3 className="text-sm font-semibold">Details</h3>
+      <Field label="Company name">{(f) => <Input {...f} value={name} onChange={(e) => setName(e.target.value)} maxLength={200} />}</Field>
+      <div className="grid items-start gap-3 sm:grid-cols-2">
+        <div className="min-w-0">
+          <Field label="Seat limit">{(f) => <Input {...f} type="number" min={1} value={seats} onChange={(e) => setSeats(e.target.value)} />}</Field>
+          <p className="mt-1 min-h-4 text-xs leading-4 text-muted">{count(c.members)} in use. Empty means no limit.</p>
+        </div>
+        <div className="min-w-0">
+          <Field label="Status">
+            {(f) => (
+              <NativeSelect {...f} value={status} onChange={(e) => setStatus(e.target.value)}>
+                {Object.entries(COMPANY_STATUSES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </NativeSelect>
+            )}
+          </Field>
+          <p className="mt-1 min-h-4 text-xs leading-4" aria-hidden="true">&nbsp;</p>
+        </div>
+      </div>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button variant="secondary" size="sm" disabled={!nameChanged && !seatsChanged && !statusChanged} onClick={() => (setName(c.name), setSeats(c.seat_limit ? String(c.seat_limit) : ''), setStatus(c.status))}>
+          Discard
+        </Button>
+        <Button size="sm" loading={update.isPending && !confirm} disabled={!nameChanged && !seatsChanged && !statusChanged} onClick={() => (risky ? setConfirm(true) : save())}>
+          Save changes
+        </Button>
+      </div>
+      <ConfirmDialog
+        open={confirm}
+        onOpenChange={setConfirm}
+        title={status === 'suspended' ? `Suspend ${c.name}?` : `Cancel ${c.name}?`}
+        body="Its people lose access to the business workspace until it is active again. The company's admins are told."
+        reason="required"
+        confirmLabel={status === 'suspended' ? 'Suspend company' : 'Cancel company'}
+        loading={update.isPending}
+        onConfirm={(reason) => save(reason)}
+      />
+    </section>
+  )
+}
+
+function AddonsSection({ c }: { c: ConsoleCompanyDetail }) {
+  const features = useCompanyFeatures()
+  const grant = useGrantFeature(c.id)
+  const end = useEndGrant(c.id)
+  const [feature, setFeature] = useState('')
+  const [days, setDays] = useState('')
+  const [ending, setEnding] = useState<{ id: string; label: string } | null>(null)
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    grant.mutate(
+      { feature, days: days ? Number(days) : null, seats: null, note: '' },
+      { onSuccess: () => (toast.success('Add-on switched on'), setFeature(''), setDays('')), onError: (er) => toast.error(er.message) },
+    )
+  }
+  return (
+    <section className="grid gap-3">
+      <h3 className="text-sm font-semibold">Add-ons and access</h3>
+      {c.entitlements.length ? (
+        <ul className="stagger grid gap-2">
+          {c.entitlements.map((e) => (
+            <li key={e.id} className="flex flex-wrap items-center gap-2 rounded-md border border-border px-3 py-2 text-sm">
+              <span className="font-medium">{e.label}</span>
+              <Badge tone={e.source === 'grant' ? 'info' : 'primary'}>{e.source === 'grant' ? 'Given by staff' : 'Paid'}</Badge>
+              <StatusPill status={e.active ? 'active' : 'ended'} label={e.active ? 'On' : 'Off'} />
+              <span className="text-xs text-muted">{e.ends_at ? `${e.active ? 'until' : 'ended'} ${shortDate(e.ends_at)}` : 'no end date'}</span>
+              {e.active && e.source === 'grant' ? (
+                <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setEnding({ id: e.id, label: e.label })}>
+                  Switch off
+                </Button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-muted">No add-ons yet.</p>
+      )}
+      <form className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_7rem_auto] sm:items-end" onSubmit={submit}>
+        <Field label="Switch on">
+          {(f) => (
+            <NativeSelect {...f} value={feature} onChange={(e) => setFeature(e.target.value)} required>
+              <option value="">Choose an add-on…</option>
+              {(features.data ?? []).map((x) => <option key={x.code} value={x.code}>{x.label}</option>)}
+            </NativeSelect>
+          )}
+        </Field>
+        <Field label="For (days)">{(f) => <Input {...f} type="number" min={1} max={3650} value={days} onChange={(e) => setDays(e.target.value)} placeholder="Always" />}</Field>
+        <Button type="submit" size="sm" loading={grant.isPending} disabled={!feature}>
+          <Plus /> Switch on
+        </Button>
+      </form>
+      <ConfirmDialog
+        open={!!ending}
+        onOpenChange={(o) => !o && setEnding(null)}
+        title={`Switch off ${ending?.label ?? 'this add-on'}?`}
+        body="It stops now. The company's admins are told."
+        reason="required"
+        confirmLabel="Switch off"
+        loading={end.isPending}
+        onConfirm={(reason) => ending && end.mutate({ entitlement: ending.id, reason }, { onSuccess: () => (toast.success('Add-on switched off'), setEnding(null)), onError: (e) => toast.error(e.message) })}
+      />
+    </section>
+  )
+}
+
+function AdminsSection({ c }: { c: ConsoleCompanyDetail }) {
+  const add = useAddAdmin(c.id)
+  const remove = useRemoveAdmin(c.id)
+  const [email, setEmail] = useState('')
+  const [role, setRole] = useState<'admin' | 'owner'>('admin')
+  const [removing, setRemoving] = useState<{ id: string; name: string } | null>(null)
+  return (
+    <section className="grid gap-3">
+      <h3 className="text-sm font-semibold">Admins</h3>
+      {c.admins.length ? (
+        <ul className="stagger grid gap-2">
+          {c.admins.map((a) => (
+            <li key={a.member_id} className="flex items-center gap-3 rounded-md border border-border px-3 py-2">
+              <Avatar name={a.name} size="sm" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{a.name}</p>
+                <p className="truncate text-xs text-muted">{a.email}</p>
+              </div>
+              <Badge tone={a.role === 'owner' ? 'primary' : 'neutral'}>{a.role === 'owner' ? 'Owner' : 'Admin'}</Badge>
+              <Button variant="ghost" size="icon" aria-label={`Remove ${a.name} as admin`} onClick={() => setRemoving({ id: a.member_id, name: a.name })}>
+                <UserMinus />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-muted">No admins.</p>
+      )}
+      <form
+        className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_7rem_auto] sm:items-end"
+        onSubmit={(e) => {
+          e.preventDefault()
+          add.mutate({ email: email.trim(), role }, { onSuccess: () => (toast.success('Admin added'), setEmail('')), onError: (er) => toast.error(er.message) })
+        }}
+      >
+        <Field label="Person's email">{(f) => <Input {...f} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />}</Field>
+        <Field label="Role">
+          {(f) => (
+            <NativeSelect {...f} value={role} onChange={(e) => setRole(e.target.value as 'admin' | 'owner')}>
+              <option value="admin">Admin</option>
+              <option value="owner">Owner</option>
+            </NativeSelect>
+          )}
+        </Field>
+        <Button type="submit" size="sm" loading={add.isPending}>
+          <UserPlus /> Add admin
+        </Button>
+      </form>
+      <ConfirmDialog
+        open={!!removing}
+        onOpenChange={(o) => !o && setRemoving(null)}
+        title={`Remove ${removing?.name ?? 'this person'} as admin?`}
+        body="They stay in the company as a learner."
+        reason="required"
+        confirmLabel="Remove admin"
+        loading={remove.isPending}
+        onConfirm={(reason) => removing && remove.mutate({ member: removing.id, reason }, { onSuccess: () => (toast.success('Admin removed'), setRemoving(null)), onError: (e) => toast.error(e.message) })}
+      />
+    </section>
+  )
+}
+
+function SubscriptionsSection({ c }: { c: ConsoleCompanyDetail }) {
+  const subscriptions = [...c.subscriptions, ...c.addon_subscriptions]
+  return (
+    <section className="grid gap-3">
+      <div>
+        <h3 className="text-sm font-semibold">Subscriptions</h3>
+        <p className="mt-1 text-xs text-muted">Plans and paid add-ons attached to this company.</p>
+      </div>
+      {subscriptions.length ? (
+        <ul className="grid gap-2">
+          {subscriptions.map((subscription) => (
+            <li key={subscription.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface-2/35 px-3 py-3 text-sm">
+              <span className="font-medium">{subscription.plan}</span>
+              <StatusPill status={subscription.status} />
+              <span className="text-xs text-muted">{count(subscription.seats)} {subscription.seats === 1 ? 'seat' : 'seats'}</span>
+              {subscription.current_period_end ? <span className="ml-auto text-xs text-muted">{subscription.cancel_at_period_end ? 'ends' : 'renews'} {shortDate(subscription.current_period_end)}</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <EmptyState icon={<BriefcaseBusiness />} title="No subscriptions" body="Plans are bought from the company's billing page." className="py-10" />
+      )}
+    </section>
+  )
+}
+
+function CompanySummary({ c }: { c: ConsoleCompanyDetail }) {
+  const items = [
+    { label: 'Status', value: <StatusPill status={c.status} label={COMPANY_STATUSES[c.status]} /> },
+    { label: 'People', value: <span className="font-semibold tabular">{count(c.members)}{c.seat_limit ? ` / ${count(c.seat_limit)} seats` : ''}</span> },
+    { label: 'Billing currency', value: <span className="font-semibold">{c.billing_currency}</span> },
+    { label: 'Joined', value: <span className="font-semibold tabular">{shortDate(c.created_at)}</span> },
+  ]
+  return (
+    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Company summary">
+      {items.map((item) => (
+        <Card key={item.label} className="p-4 shadow-none">
+          <p className="text-xs font-medium text-muted">{item.label}</p>
+          <div className="mt-2 text-sm">{item.value}</div>
+        </Card>
+      ))}
+    </section>
+  )
+}
+
+const COMPANY_PREVIEW_ROLES: { value: StaffPreviewRole; label: string; detail: string; Icon: typeof ShieldCheck }[] = [
+  { value: 'company_admin', label: 'Company administrator', detail: 'Workspace, billing, people and learning.', Icon: ShieldCheck },
+  { value: 'hr_admin', label: 'HR administrator', detail: 'People, learning and governance.', Icon: HeartHandshake },
+  { value: 'executive', label: 'Executive', detail: 'Strategy, performance and approvals.', Icon: Crown },
+  { value: 'department_head', label: 'Department head', detail: 'Department team and progress.', Icon: BriefcaseBusiness },
+  { value: 'line_manager', label: 'Line manager', detail: 'Direct reports and learning.', Icon: UserCog },
+]
+
+function CompanyRoleChooser({ company, inline = false }: { company: ConsoleCompanyDetail; inline?: boolean }) {
+  const { switchToStaffOrg } = useWorkspace()
+  const navigate = useNavigate()
+  const enter = (role: StaffPreviewRole) => {
+    switchToStaffOrg({ org_id: company.id, name: company.name, slug: company.slug, preview_role: role })
+    navigate('/business')
+  }
+  return (
+    <section className="rounded-2xl border border-primary/25 bg-primary-soft/25 p-4 sm:p-6">
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h3 className="text-base font-semibold">Enter company workspace as…</h3>
+        <p className="mt-1 text-xs leading-relaxed text-muted">Choose a role to open its company dashboard.</p>
+        </div>
+        <span className="text-xs text-muted">5 workspace roles</span>
+      </div>
+      <div className={inline ? 'grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5' : 'grid gap-2'}>
+        {COMPANY_PREVIEW_ROLES.map(({ value, label, detail, Icon }) => (
+          <button key={value} type="button" onClick={() => enter(value)} aria-label={`${label}: open workspace dashboard`} className="group flex min-h-36 w-full flex-col rounded-xl border border-border bg-surface p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/50 hover:bg-primary-soft/30 hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
+            <span className="flex w-full items-start gap-3">
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary-soft text-primary-soft-text transition-colors group-hover:bg-primary group-hover:text-on-primary"><Icon className="size-4.5" /></span>
+              <span className="min-w-0 flex-1"><span className="block text-sm font-semibold leading-snug">{label}</span><span className="mt-1.5 block text-xs leading-relaxed text-muted">{detail}</span></span>
+            </span>
+            <span className="mt-auto flex w-full items-center justify-between border-t border-border/70 pt-3 text-xs font-medium text-primary">
+              <span>Open dashboard</span>
+              <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden />
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function CompanyDetail({ id, inline = false }: { id: string; inline?: boolean }) {
+  const [tab, setTab] = useState<'details' | 'access' | 'admins' | 'subscriptions'>('details')
+  const q = useCompany(id)
+  if (q.isLoading) return <div className="grid gap-3">{Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-16" />)}</div>
+  if (q.error || !q.data) return <ErrorState message={q.error?.message ?? 'Company not found.'} onRetry={() => void q.refetch()} />
+  const c = q.data
+
+  if (inline) {
+    const tabs = [
+      { value: 'details' as const, label: 'Details' },
+      { value: 'access' as const, label: 'Add-ons & access' },
+      { value: 'admins' as const, label: `Admins (${c.admins.length})` },
+      { value: 'subscriptions' as const, label: `Subscriptions (${c.subscriptions.length + c.addon_subscriptions.length})` },
+    ]
+    return (
+      <div className="grid animate-reveal gap-6">
+        <CompanyRoleChooser company={c} inline />
+        <CompanySummary c={c} />
+        <Card className="min-w-0 overflow-hidden">
+          <div className="overflow-x-auto border-b border-border px-3 scrollbar-none sm:px-5" role="tablist" aria-label={`${c.name} management sections`}>
+            <div className="flex min-w-max gap-1">
+              {tabs.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === item.value}
+                  onClick={() => setTab(item.value)}
+                  className={`relative px-3 py-3.5 text-sm font-medium transition-colors ${tab === item.value ? 'text-primary after:absolute after:right-3 after:bottom-0 after:left-3 after:h-0.5 after:rounded-full after:bg-primary after:content-[""]' : 'text-muted hover:text-text'}`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        <div className="min-h-64 p-4 sm:p-6 lg:p-7">
+            {tab === 'details' ? <DetailsSection key={`${c.name}-${c.status}-${c.seat_limit}`} c={c} /> : null}
+            {tab === 'access' ? <AddonsSection c={c} /> : null}
+            {tab === 'admins' ? <AdminsSection c={c} /> : null}
+            {tab === 'subscriptions' ? <SubscriptionsSection c={c} /> : null}
+          </div>
+        </Card>
+      </div>
+    )
+  }
+
+  return (
+    <div className="grid animate-reveal gap-6">
+      <CompanyRoleChooser company={c} />
+      <div>
+        <InfoRow label="Status"><StatusPill status={c.status} label={COMPANY_STATUSES[c.status]} /></InfoRow>
+        <InfoRow label="People">{count(c.members)}{c.seat_limit ? ` of ${count(c.seat_limit)} seats` : ''}</InfoRow>
+        <InfoRow label="Billing currency">{c.billing_currency}</InfoRow>
+        <InfoRow label="Joined">{shortDate(c.created_at)}</InfoRow>
+      </div>
+      <DetailsSection key={`${c.name}-${c.status}-${c.seat_limit}`} c={c} />
+      <AddonsSection c={c} />
+      <AdminsSection c={c} />
+      <SubscriptionsSection c={c} />
+    </div>
+  )
+}
+
+function CompanyCard({ c, onOpen }: { c: ConsoleCompany; onOpen: () => void }) {
+  return (
+    <button type="button" onClick={onOpen} className="grid w-full gap-1.5 rounded-lg border border-border bg-surface p-4 text-left shadow-sm transition-colors hover:border-border-strong">
+      <span className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate font-medium">{c.name}</span>
+        <StatusPill status={c.status} label={COMPANY_STATUSES[c.status]} />
+      </span>
+      <span className="text-xs text-muted">
+        {count(c.members)}{c.seat_limit ? ` / ${count(c.seat_limit)}` : ''} people
+      </span>
+    </button>
+  )
+}
+
+/** Console > Companies: list and a full-width, reversible inline company profile. */
+export function ConsoleCompaniesPage() {
+  const [selected, setSelected] = useParam('company')
+  const [status, setStatus] = useParam('status')
+  const [q, setQ] = useState('')
+  const debounced = useDebounced(q)
+  const [creating, setCreating] = useState(false)
+  const list = useCompanies({ q: debounced.trim(), status })
+  const rows = list.data ?? []
+  const filtered = !!(debounced.trim() || status)
+  const current = rows.find((r) => r.id === selected)
+  const showingInlineDetail = COMPANY_DETAIL_PRESENTATION === 'inline' && !!selected
+  return (
+    <>
+      <PageHeader
+        title={showingInlineDetail ? current?.name ?? 'Company profile' : 'Companies'}
+        description={showingInlineDetail ? current ? `/${current.slug} · Manage workspace access, company settings and administrators.` : 'Manage workspace access, company settings and administrators.' : 'Business customers: status, seats, add-ons and admins.'}
+        actions={
+          showingInlineDetail ? (
+            <Button variant="secondary" onClick={() => setSelected('')}>
+              <ArrowLeft /> All companies
+            </Button>
+          ) : (
+            <Button onClick={() => setCreating(true)}>
+              <Plus /> Add company
+            </Button>
+          )
+        }
+      />
+      {showingInlineDetail && selected ? (
+        <CompanyDetail id={selected} inline />
+      ) : (
+        <div className="grid gap-6">
+          <Kpis />
+          <Card className="min-w-0">
+          <div className="grid gap-2 border-b border-border p-4 sm:grid-cols-[minmax(0,1fr)_12rem]">
+            <Input icon={<Search />} type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search companies" aria-label="Search companies" />
+            <NativeSelect aria-label="Filter by status" value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="">All statuses</option>
+              {Object.entries(COMPANY_STATUSES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </NativeSelect>
+          </div>
+          {list.error ? (
+            <ErrorState message={list.error.message} onRetry={() => void list.refetch()} />
+          ) : list.isLoading ? (
+            <div className="grid gap-3 p-4">{Array.from({ length: 5 }, (_, i) => <Skeleton key={i} className="h-12" />)}</div>
+          ) : !rows.length ? (
+            <EmptyState icon={<Building2 />} title={filtered ? 'No companies match' : 'No companies yet'} body={filtered ? 'Try other filters.' : 'Companies appear here when they sign up for a business plan, or when you add one.'} />
+          ) : (
+            <div className="animate-reveal">
+              <ul className="stagger grid gap-2.5 p-3 md:hidden">
+                {rows.map((c) => <li key={c.id}><CompanyCard c={c} onOpen={() => setSelected(c.id)} /></li>)}
+              </ul>
+              <div className="hidden md:block">
+                <Table>
+                  <thead>
+                    <tr>
+                      <Th>Company</Th>
+                      <Th>Status</Th>
+                      <Th className="text-right">Seats</Th>
+                      <Th className="text-right">Joined</Th>
+                    </tr>
+                  </thead>
+                  <tbody className="stagger">
+                    {rows.map((c) => (
+                      <Tr key={c.id} className="cursor-pointer" onClick={() => setSelected(c.id)}>
+                        <Td>
+                          <button type="button" className="max-w-[16rem] truncate text-left font-medium hover:text-primary" onClick={(e) => (e.stopPropagation(), setSelected(c.id))}>
+                            {c.name}
+                          </button>
+                          <p className="text-xs text-muted">{c.admins} {c.admins === 1 ? 'admin' : 'admins'}</p>
+                        </Td>
+                        <Td><StatusPill status={c.status} label={COMPANY_STATUSES[c.status]} /></Td>
+                        <Td className="text-right tabular">{count(c.members)}{c.seat_limit ? <span className="text-muted"> / {count(c.seat_limit)}</span> : null}</Td>
+                        <Td className="text-right text-xs text-muted tabular">{shortDate(c.created_at)}</Td>
+                      </Tr>
+                    ))}
+                  </tbody>
+                </Table>
+              </div>
+            </div>
+          )}
+          </Card>
+        </div>
+      )}
+      {COMPANY_DETAIL_PRESENTATION === 'sheet' ? (
+        <DetailSheet open={!!selected} onOpenChange={(o) => !o && setSelected('')} title={current?.name ?? 'Company'} description={current ? `/${current.slug}` : undefined}>
+          {selected ? <CompanyDetail id={selected} /> : null}
+        </DetailSheet>
+      ) : null}
+      <CreateCompany open={creating} onOpenChange={setCreating} onCreated={setSelected} />
+    </>
+  )
+}

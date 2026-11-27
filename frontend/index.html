@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon-180.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f8f7fc" />
+    <meta name="description" content="LearnHub: online courses for people and compliance training for teams." />
+    <title>LearnHub</title>
+    <script>
+      // On direct home visits, start the intro download before the React bundle runs.
+      // Other routes do not pay for the large video request.
+      var introCanPlay =
+        location.pathname === '/' &&
+        matchMedia('(min-width: 641px)').matches &&
+        !matchMedia('(prefers-reduced-motion: reduce)').matches
+      if (introCanPlay) {
+        var videoOrigin = document.createElement('link')
+        videoOrigin.rel = 'preconnect'
+        videoOrigin.href = 'https://ik.imagekit.io'
+        document.head.appendChild(videoOrigin)
+
+        var introPreload = document.createElement('link')
+        introPreload.rel = 'preload'
+        introPreload.as = 'video'
+        introPreload.type = 'video/webm'
+        introPreload.href = 'https://ik.imagekit.io/bmjbddbgyi/evidrise_hero_ending.webm?tr=orig-true'
+        introPreload.fetchPriority = 'high'
+        document.head.appendChild(introPreload)
+      }
+    </script>
+    <script>
+      // Apply the saved theme before first paint (no light flash in dark mode).
+      try {
+        var dark = localStorage.getItem('theme') === 'dark'
+        document.documentElement.classList.toggle('dark', dark)
+        document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#0d0b16' : '#f8f7fc')
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

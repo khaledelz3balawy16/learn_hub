@@ -1,0 +1,43 @@
+import type { ReactNode } from 'react'
+
+import { Avatar } from '@/components/ui/avatar'
+import { Progress } from '@/components/ui/progress'
+
+/** A friendly display name: the stored name, or a title-cased guess from the email's local
+ * part (e.g. "ahmed.lotfi@…" -> "Ahmed Lotfi"), so people who never set a name still read as
+ * a name with real two-letter initials instead of a repeated email. */
+export function personName(name: string, email: string): string {
+  if (name?.trim()) return name
+  const local = email.split('@')[0] ?? ''
+  const parts = local.split(/[._-]+/).filter(Boolean)
+  return parts.length ? parts.map((p) => p[0]!.toUpperCase() + p.slice(1)).join(' ') : email
+}
+
+/** Avatar, name and email in one table cell. */
+export function PersonCell({ name, email, extra }: { name: string; email: string; extra?: ReactNode }) {
+  const display = personName(name, email)
+  return (
+    <div className="flex min-w-0 items-center gap-3">
+      <Avatar name={display} size="sm" />
+      <div className="min-w-0">
+        <p className="flex items-center gap-2 font-medium">
+          <span className="min-w-0 truncate">{display}</span>
+          {extra}
+        </p>
+        <p className="max-w-[16rem] truncate text-xs text-muted">{email}</p>
+      </div>
+    </div>
+  )
+}
+
+/** "68%" with a small bar that fills in. */
+export function ProgressCell({ value }: { value: number }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-9 text-right text-xs tabular">{Math.round(value)}%</span>
+      <Progress value={value} className="w-20" label={`${Math.round(value)}% average progress`} />
+    </div>
+  )
+}
+
+export const personStatus = (s: string) => ({ active: 'Active', suspended: 'Suspended', deleted: 'Deleted', approved: 'Active', pending: 'Applied', rejected: 'Rejected' })[s] ?? s
